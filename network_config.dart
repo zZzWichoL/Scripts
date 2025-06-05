@@ -116,7 +116,7 @@ class _NetworkConfigScreenState extends State<NetworkConfigScreen> {
           .get(
             Uri.parse("http://${ipController.text}/api/status"),
           )
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 20));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -249,44 +249,60 @@ class _NetworkConfigScreenState extends State<NetworkConfigScreen> {
     });
 
     try {
+      print("Enviando configuración WiFi...");
+      print("SSID: $selectedSSID");
+      print("URL: http://${ipController.text}/api/wifi/configure");
+
       final response = await http
           .post(
             Uri.parse("http://${ipController.text}/api/wifi/configure"),
-            headers: {'Content-Type': 'application/json'},
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
             body: jsonEncode({
               "ssid": selectedSSID!,
               "password": passwordController.text,
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 20));
+
+      print("Respuesta HTTP: ${response.statusCode}");
+      print("Cuerpo respuesta: ${response.body}");
 
       if (response.statusCode == 200) {
         setState(() {
-          status = "✓ Configuración enviada exitosamente!\n"
-              "ESP32 reiniciándose...\n"
-              "1. Espera 30 segundos\n"
-              "2. Conéctate a la red '$selectedSSID'\n"
-              "3. Presiona Actualizar para verificar";
+          status = "✓ Configuración enviada correctamente!\n"
+              "El ESP32 se está reiniciando...\n\n"
+              "Próximos pasos:\n"
+              "1. ⏱️ Espera 45 segundos\n"
+              "2. 📱 Ve a WiFi y conéctate a '$selectedSSID'\n"
+              "3. 🔄 Regresa y presiona 'Actualizar'\n"
+              "4. ✅ Verifica la nueva IP del ESP32";
         });
 
-        // Limpiar contraseña
         passwordController.clear();
 
-        // Esperar y actualizar estado
-        Future.delayed(const Duration(seconds: 35), () {
+        // Esperar más tiempo para el reinicio
+        Future.delayed(const Duration(seconds: 45), () {
           if (mounted) {
             fetchEsp32Status();
           }
         });
       } else {
         setState(() {
-          status = "Error: ${response.body}";
+          status =
+              "❌ Error del servidor: ${response.statusCode}\n${response.body}";
         });
       }
     } catch (e) {
+      print("Error en connectToNetwork: $e");
       setState(() {
-        status = "Error de red: $e\n"
-            "Verifica que estés conectado a la red 'Gasox'";
+        status = "❌ Error de conexión: $e\n\n"
+            "Verifica:\n"
+            "• Estás conectado a 'Gasox'\n"
+            "• La IP es correcta (${ipController.text})\n"
+            "• El ESP32 está encendido";
       });
     } finally {
       setState(() {
