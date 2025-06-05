@@ -132,26 +132,33 @@ void saveConfiguration() {
 }
 
 void connectToWiFi() {
-  Serial.println("Intentando conectar a WiFi...");
-  WiFi.mode(WIFI_STA); // Cambiar a solo modo Station
+  Serial.println("Intentando conectar a WiFi: " + ssid);
+  WiFi.mode(WIFI_AP_STA); // Mantener AP activo durante conexión
   WiFi.begin(ssid.c_str(), password.c_str());
   
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 60) {
-    delay(500);
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+    delay(1000);
     Serial.print(".");
     attempts++;
+    
+    // Verificar si el AP sigue activo
+    if (WiFi.softAPgetStationNum() == 0 && attempts > 15) {
+      // Si no hay clientes conectados al AP, recrearlo
+      WiFi.softAP(ap_ssid, ap_password);
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.println("\n✓ Conectado a WiFi");
     Serial.println("  IP: " + WiFi.localIP().toString());
     wifiConnected = true;
+    // Mantener el AP activo por si falla la conexión WiFi
   } else {
     Serial.println("\n✗ Fallo conexión WiFi");
     wifiConnected = false;
-    // Si falla la conexión, crear AP
-    createAccessPoint();
+    WiFi.mode(WIFI_AP); // Volver solo a modo AP
+    WiFi.softAP(ap_ssid, ap_password);
   }
 }
 
@@ -208,70 +215,6 @@ void setupRoutes() {
   // Habilitar CORS para todas las rutas
   server.enableCORS(true);
 
-  // Página principal
-  server.on("/", HTTP_GET, []() {
-    String html = R"(
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset='UTF-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <title>Gasox Monitor</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .connected { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .disconnected { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .reading { display: inline-block; margin: 10px; padding: 15px; background: #e9ecef; border-radius: 5px; min-width: 150px; text-align: center; }
-        .alarm { background: #f8d7da !important; color: #721c24; }
-        a { color: #007bff; text-decoration: none; margin: 0 10px; }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class='container'>
-        <h1>🔥 Gasox - Monitor de Gases</h1>
-        
-        <div class='status )" + String(wifiConnected ? "connected" : "disconnected") + R"('>
-            <strong>Estado WiFi:</strong> )" + String(wifiConnected ? "Conectado a " + WiFi.SSID() : "Desconectado") + R"(
-        </div>
-        
-        <div class='status connected'>
-            <strong>Modo AP:</strong> )" + String(ap_ssid) + R"( ()" + WiFi.softAPIP().toString() + R"())
-        </div>
-        
-        <h3>Lecturas Actuales</h3>
-        <div class='reading )" + String(mq4Value > mq4Threshold ? "alarm" : "") + R"('>
-            <strong>MQ4 (Metano)</strong><br>
-            )" + String(mq4Value, 1) + R"( ppm<br>
-            <small>Umbral: )" + String(mq4Threshold, 1) + R"( ppm</small>
-        </div>
-        
-        <div class='reading )" + String(mq7Value > mq7Threshold ? "alarm" : "") + R"('>
-            <strong>MQ7 (CO)</strong><br>
-            )" + String(mq7Value, 1) + R"( ppm<br>
-            <small>Umbral: )" + String(mq7Threshold, 1) + R"( ppm</small>
-        </div>
-        
-        <h3>Enlaces API</h3>
-        <div>
-            <a href='/api/readings'>Lecturas JSON</a>
-            <a href='/api/status'>Estado JSON</a>
-            <a href='/api/history'>Historial</a>
-            <a href='/api/device'>Info Dispositivo</a>
-        </div>
-        
-        <script>
-            setInterval(() => location.reload(), 5000);
-        </script>
-    </div>
-</body>
-</html>
-    )";
-    server.send(200, "text/html", html);
-  });
-
   // API: Lecturas de sensores
   server.on("/api/readings", HTTP_GET, []() {
     mq4Value = readMQ4();
@@ -307,12 +250,12 @@ void setupRoutes() {
     doc["network"]["ap"]["ip"] = WiFi.softAPIP().toString();
     doc["network"]["ap"]["clients"] = WiFi.softAPgetStationNum();
     
-    doc["network"]["wifi"]["connected"] = wifiConnected;
+    doc["network"]["wifi"]["connected"] = (WiFi.status() == WL_CONNECTED);
+    doc["network"]["wifi"]["ssid"] = wifiConnected ? WiFi.SSID() : "";
+    doc["network"]["wifi"]["ip"] = wifiConnected ? WiFi.localIP().toString() : "";
     if (wifiConnected) {
-        doc["network"]["wifi"]["ssid"] = WiFi.SSID();
-        doc["network"]["wifi"]["ip"] = WiFi.localIP().toString();
-        doc["network"]["wifi"]["rssi"] = WiFi.RSSI();
-    }
+    doc["network"]["wifi"]["rssi"] = WiFi.RSSI();
+  } 
     
     String response;
     serializeJson(doc, response);
@@ -363,23 +306,41 @@ void setupRoutes() {
         return;
     }
     
+    Serial.println("Recibida configuración WiFi:");
+    Serial.println(server.arg("plain"));
+    
     DynamicJsonDocument doc(512);
-    deserializeJson(doc, server.arg("plain"));
+    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    
+    if (error) {
+        Serial.println("Error parseando JSON: " + String(error.c_str()));
+        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
     
     if (!doc.containsKey("ssid") || !doc.containsKey("password")) {
         server.send(400, "application/json", "{\"error\":\"Missing ssid or password\"}");
         return;
     }
     
-    ssid = doc["ssid"].as<String>();
-    password = doc["password"].as<String>();
+    String newSSID = doc["ssid"].as<String>();
+    String newPassword = doc["password"].as<String>();
+    
+    Serial.println("Nueva configuración:");
+    Serial.println("SSID: " + newSSID);
+    Serial.println("Password: " + String(newPassword.length()) + " caracteres");
+    
+    ssid = newSSID;
+    password = newPassword;
     
     saveConfiguration();
     
-    server.send(200, "application/json", "{\"message\":\"WiFi configured, restarting...\"}");
-    delay(1000);
+    server.send(200, "application/json", "{\"message\":\"Configuration saved, restarting...\"}");
+    
+    // Reiniciar después de enviar respuesta
+    delay(2000);
     ESP.restart();
-  });
+});
 
   // API: Olvinar WiFi
   server.on("/api/wifi/forget", HTTP_POST, []() {
