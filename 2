@@ -1,0 +1,211 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'connection_settings.dart';
+
+class LEDControlPage extends StatefulWidget {
+  @override
+  _LEDControlPageState createState() => _LEDControlPageState();
+}
+
+class _LEDControlPageState extends State<LEDControlPage> {
+  final ConnectionSettings _connection = ConnectionSettings();
+  bool _ledStatus = false;
+  String _statusMessage = "Desconectado";
+
+  final TextEditingController _ipController = TextEditingController();
+  final TextEditingController _portController =
+      TextEditingController(text: '8080');
+
+  List<String> _savedIPs = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedIPs();
+  }
+
+  Future<void> _loadSavedIPs() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _savedIPs = prefs.getStringList('saved_ips') ?? [];
+    });
+  }
+
+  Future<void> saveLastIP(String ip) async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> ips = prefs.getStringList('saved_ips') ?? [];
+    if (!ips.contains(ip)) {
+      ips.add(ip);
+      await prefs.setStringList('saved_ips', ips);
+      setState(() {
+        _savedIPs = ips;
+      });
+    }
+  }
+
+  Future<void> _connectToESP32() async {
+    final ip = _ipController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 8080;
+    setState(() {
+      _statusMessage = "Conectando...";
+    });
+    try {
+      await _connection.connect(ip, port);
+      await saveLastIP(ip);
+      setState(() {
+        _statusMessage = "Conectado a $ip:$port";
+      });
+      await _getLEDStatus();
+    } catch (e) {
+      setState(() {
+        _statusMessage = "Error: ${e.toString()}";
+      });
+      _showMessage("Error de conexión: ${e.toString()}");
+    }
+  }
+
+  Future<void> _getLEDStatus() async {
+    try {
+      String response = await _connection.sendCommand('STATUS');
+      setState(() {
+        _ledStatus = response.contains('ENCENDIDO');
+      });
+    } catch (e) {
+      _showMessage("Error al obtener estado: $e");
+    }
+  }
+
+  Future<void> _toggleLED() async {
+    try {
+      String command = _ledStatus ? 'LED_OFF' : 'LED_ON';
+      String response = await _connection.sendCommand(command);
+      setState(() {
+        _ledStatus = response.contains('ENCENDIDO');
+      });
+    } catch (e) {
+      _showMessage("Error al enviar comando: $e");
+    }
+  }
+
+  void _showMessage(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  @override
+  void dispose() {
+    _ipController.dispose();
+    _portController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Control LED ESP32')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _ipController,
+                    decoration:
+                        InputDecoration(labelText: 'IP del ESP32 o mDNS'),
+                  ),
+                ),
+                SizedBox(width: 8),
+                DropdownButton<String>(
+                  hint: Text('Historial'),
+                  value: null,
+                  items: _savedIPs.map((ip) {
+                    return DropdownMenuItem(
+                      value: ip,
+                      child: Text(ip),
+                    );
+                  }).toList(),
+                  onChanged: (ip) {
+                    if (ip != null) {
+                      _ipController.text = ip;
+                    }
+                  },
+                ),
+              ],
+            ),
+            TextField(
+              controller: _portController,
+              decoration:
+                  InputDecoration(labelText: 'Puerto', hintText: '8080'),
+              keyboardType: TextInputType.number,
+            ),
+            SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: _connectToESP32,
+              child: Text('Conectar'),
+            ),
+            SizedBox(height: 20),
+            Text(
+              'Estado: ${_ledStatus ? "ENCENDIDO" : "APAGADO"}',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: _ledStatus ? Colors.green : Colors.red,
+              ),
+            ),
+            SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton.icon(
+                onPressed: _toggleLED,
+                icon: Icon(
+                    _ledStatus ? Icons.lightbulb : Icons.lightbulb_outline),
+                label: Text(
+                  _ledStatus ? 'APAGAR LED' : 'ENCENDER LED',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _ledStatus ? Colors.red : Colors.green,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ),
+            SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  String response =
+                      await _connection.sendCommand('FORGET_WIFI');
+                  _showMessage("Red olvidada. El ESP32 reiniciará.");
+                  setState(() {
+                    _statusMessage = "Red olvidada. Reiniciando ESP32...";
+                  });
+                } catch (e) {
+                  _showMessage("Error al olvidar red: $e");
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              child: Text('Olvidar red WiFi del ESP32'),
+            ),
+            SizedBox(height: 10),
+            Text(_statusMessage),
+            SizedBox(height: 10),
+            Text(
+              "TIP: Si usaste WiFiManager, puedes probar con la IP que te da el router o con esp32.local si tu red lo soporta.",
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+void main() {
+  runApp(MaterialApp(
+    debugShowCheckedModeBanner: false,
+    home: LEDControlPage(),
+  ));
+}
